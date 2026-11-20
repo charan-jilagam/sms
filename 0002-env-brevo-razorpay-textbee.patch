@@ -1,0 +1,430 @@
+From 9422f8925b091a0194f1c164d8f1893695f9a54b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 20:10:45 +0000
+Subject: [PATCH] feat(erp): read server/.env, add Brevo e-mail, TextBee SMS
+ and Razorpay; scheduler off by default
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018vXEMb8tJXtNvdEiqT8U8d
+---
+ client/src/pages/Fees.jsx    | 19 +++++++++++++---
+ client/src/pages/System.jsx  |  7 +++---
+ docs/erp/cron-jobs.md        |  2 +-
+ docs/erp/parent-student.md   |  2 +-
+ docs/erp/setup.md            | 11 +++++----
+ server/.env.example          | 30 ++++++++++++++++---------
+ server/src/config.js         | 15 +++++++++----
+ server/src/jobs/index.js     |  2 +-
+ server/src/routes/fees.js    | 24 +++++++++++---------
+ server/src/routes/system.js  |  3 +++
+ server/src/utils/dispatch.js | 43 ++++++++++++++++++++++++++++++++++++
+ server/src/utils/gateway.js  | 26 +++++++++++++++++++++-
+ server/src/utils/notify.js   |  9 +++++---
+ 13 files changed, 152 insertions(+), 41 deletions(-)
+ create mode 100644 server/src/utils/dispatch.js
+
+diff --git a/client/src/pages/Fees.jsx b/client/src/pages/Fees.jsx
+index 2d039fb..ccb4891 100644
+--- a/client/src/pages/Fees.jsx
++++ b/client/src/pages/Fees.jsx
+@@ -27,8 +27,21 @@ export function Receipt({ id, onClose }) {
+ /* ---------------- parent online payment ---------------- */
+ function PayModal({ inv, onClose, onDone }) {
+   const [amount, setAmount] = useState(inv.balance); const [method, setMethod] = useState('upi'); const [step, setStep] = useState('choose'); const [err, setErr] = useState(''); const [order, setOrder] = useState(null);
+-  const start = async () => { setErr(''); try { const o = await api.post('/fees/portal/order', { invoice_id: inv.invoice_id, amount: Number(amount) }); setOrder(o); setStep('pay'); } catch (e) { setErr(e.message); } };
+-  const confirm = async (outcome) => { setStep('processing'); setErr(''); try { const r = await api.post('/fees/portal/confirm', { order_ref: order.order_ref, method, outcome }); setStep('done'); setOrder({ ...order, payment: r.payment }); } catch (e) { setErr(e.message); setStep('pay'); } };
++  const { user } = useAuth();
++  const loadRzp = () => new Promise((ok, no) => { if (window.Razorpay) return ok(); const s = document.createElement('script'); s.src = 'https://checkout.razorpay.com/v1/checkout.js'; s.onload = ok; s.onerror = () => no(new Error('Could not load Razorpay. Check your internet connection.')); document.body.appendChild(s); });
++  const confirm = async (outcome, extra = {}, o = order) => { setStep('processing'); setErr(''); try { const r = await api.post('/fees/portal/confirm', { order_ref: o.order_ref, method, outcome, ...extra }); setStep('done'); setOrder({ ...o, payment: r.payment }); } catch (e) { setErr(e.message); setStep(o.provider === 'razorpay' ? 'choose' : 'pay'); } };
++  const start = async () => {
++    setErr('');
++    try {
++      const o = await api.post('/fees/portal/order', { invoice_id: inv.invoice_id, amount: Number(amount) }); setOrder(o);
++      if (o.provider !== 'razorpay') return setStep('pay');
++      await loadRzp();
++      new window.Razorpay({ key: o.keyId, order_id: o.order_ref, amount: Math.round(o.amount * 100), currency: o.currency || 'INR', name: 'School fees', description: `${inv.description} (${inv.invoice_no})`,
++        prefill: { name: user.name, email: user.email || undefined, contact: user.mobile || undefined }, theme: { color: '#4f46e5' },
++        handler: (r) => confirm('success', { razorpay_payment_id: r.razorpay_payment_id, razorpay_signature: r.razorpay_signature }, o),
++        modal: { ondismiss: () => setErr('Payment window closed. No money was taken.') } }).open();
++    } catch (e) { setErr(e.message); }
++  };
+   const M = [['upi', Smartphone, 'UPI'], ['card', CreditCard, 'Card'], ['netbanking', Landmark, 'Net banking']];
+   return (
+     <Modal title={step === 'done' ? 'Payment successful' : `Pay ${inv.description}`} size="narrow" onClose={step === 'processing' ? undefined : (step === 'done' ? onDone : onClose)}
+@@ -36,7 +49,7 @@ function PayModal({ inv, onClose, onDone }) {
+       {err && <Alert tone="bad">{err}</Alert>}
+       {step === 'choose' && <div className="stack"><div className="card card-pad"><div className="row between"><span className="muted">{inv.invoice_no}</span><b>Balance {money(inv.balance)}</b></div></div>
+         <Input label="Amount to pay" type="number" min="1" max={inv.balance} value={amount} onChange={setAmount} hint="You can pay part of the balance now and the rest later." />
+-        <div className="field"><label>Payment method</label><div className="row">{M.map(([k, I, l]) => <button key={k} type="button" className={`chip ${method === k ? 'on' : ''}`} onClick={() => setMethod(k)}><I size={15} /> {l}</button>)}</div></div></div>}
++        <div className="field" hidden={false}><label>Payment method (UPI, card and net banking are all offered on the secure Razorpay page)</label><div className="row">{M.map(([k, I, l]) => <button key={k} type="button" className={`chip ${method === k ? 'on' : ''}`} onClick={() => setMethod(k)}><I size={15} /> {l}</button>)}</div></div></div>}
+       {step === 'pay' && order && <div className="stack"><Alert><ShieldCheck />This is the built-in <b>demo gateway</b>. No real money moves. Connect Razorpay/Stripe in <code>server/src/utils/gateway.js</code> for live payments.</Alert>
+         <div className="card card-pad center"><div className="muted small">Order {order.order_ref}</div><div style={{ fontSize: 32, fontWeight: 800 }}>{money(order.amount)}</div></div>
+         <Button variant="ok" onClick={() => confirm('success')}>Approve payment</Button><Button variant="danger" onClick={() => confirm('fail')}>Simulate declined payment</Button></div>}
+diff --git a/client/src/pages/System.jsx b/client/src/pages/System.jsx
+index 95849af..756a2fd 100644
+--- a/client/src/pages/System.jsx
++++ b/client/src/pages/System.jsx
+@@ -27,7 +27,7 @@ function Templates() {
+ function Jobs() {
+   const toast = useToast(); const { data, loading, reload } = useFetch('/system/jobs'); const [busy, setBusy] = useState('');
+   const run = async (n) => { setBusy(n); try { const r = await api.post(`/system/jobs/${n}/run`); toast(r.message || 'Job finished'); reload(); } catch (e) { toast(e.message, 'bad'); } setBusy(''); };
+-  return <div className="stack">{data && !data.cron_enabled && <Alert tone="warn">The scheduler is switched off (<code>ENABLE_CRON=0</code>). Jobs can still be run manually here.</Alert>}
++  return <div className="stack">{data && !data.cron_enabled && <Alert>The automatic scheduler is off. Every job can still be run manually here. To run them on a timer, set <code>ENABLE_CRON=1</code> in <code>server/.env</code> and restart.</Alert>}
+     {loading ? <Loading /> : <div className="grid g2">{data?.rows.map((j) => <Card key={j.name}><div className="row between"><div><b style={{ fontSize: 16 }}>{j.title}</b><div className="muted small mono">{j.name} · cron {j.schedule}</div></div>{j.last_run ? <StatusBadge status={j.last_run.status === 'ok' ? 'success' : j.last_run.status} label={cap(j.last_run.status)} /> : <Badge>Never run</Badge>}</div>
+       <p className="muted" style={{ margin: '10px 0' }}>{j.description}</p>{j.last_run && <div className="small"><Clock size={12} /> {ago(j.last_run.finished_at || j.last_run.started_at)} · {j.last_run.message}</div>}
+       {j.runs.length > 1 && <div className="row" style={{ gap: 4, marginTop: 10 }}>{j.runs.map((r, i) => <span key={i} title={`${fdatetime(r.started_at)}: ${r.message || r.status}`} className={`dot-step ${r.status === 'ok' ? 'on' : 'bad'}`} />)}</div>}
+@@ -61,8 +61,9 @@ function Backups() {
+     <Table loading={loading} rows={(data?.rows || []).map((b) => ({ ...b, id: b.name }))} empty="No backups yet" columns={[{ title: 'File', render: (b) => <span className="mono">{b.name}</span> }, { title: 'Size', render: (b) => kb(b.size) }, { title: '', render: (b) => <Button size="sm" icon={Download} onClick={() => api.download(`/system/backups/${b.name}`, b.name).catch((e) => toast(e.message, 'bad'))}>Download</Button> }]} /></Card>;
+ }
+ function Outbox() {
+-  const { data, loading } = useFetch('/system/outbox');
+-  return <Card title="Message outbox (SMS & e-mail)" pad={false}><Alert>No real gateway is connected, so every SMS or e-mail is logged here. Plug a provider into <code>server/src/utils/notify.js</code> to send them for real.</Alert>
++  const toast = useToast(); const { data, loading, reload } = useFetch('/system/outbox'); const ch = useFetch('/system/channels'); const [busy, setBusy] = useState(false);
++  return <Card title="Message outbox (SMS & e-mail)" action={<Button loading={busy} onClick={async () => { setBusy(true); try { const r = await api.post('/system/outbox/flush'); toast(`Sent ${r.sent}, failed ${r.failed}, not configured ${r.logged}`); reload(); } catch (e) { toast(e.message, 'bad'); } setBusy(false); }}>Send queued now</Button>} pad={false}>
++    <Alert tone={ch.data?.email && ch.data?.sms ? 'ok' : 'warn'}>E-mail (Brevo): <b>{ch.data?.email ? 'connected' : 'not configured'}</b> · SMS (TextBee): <b>{ch.data?.sms ? 'connected' : 'not configured (needs TEXTBEE_API_KEY and TEXTBEE_DEVICE_ID)'}</b> · Payments: <b>{ch.data?.payments}</b>. Channels that are not configured only log the message here.</Alert>
+     <Table loading={loading} rows={data?.rows} empty="No messages yet" columns={[{ title: '', render: (m) => m.channel === 'sms' ? <MessageSquare size={16} /> : <Mail size={16} /> }, { title: 'To', key: 'to_addr' }, { title: 'Message', render: (m) => <div>{m.subject && <b>{m.subject}</b>}<div className="muted small">{m.body}</div></div> }, { title: 'When', render: (m) => ago(m.created_at) }, { title: 'Status', render: (m) => <StatusBadge status={m.status} /> }]} /></Card>;
+ }
+ 
+diff --git a/docs/erp/cron-jobs.md b/docs/erp/cron-jobs.md
+index ad463f0..f368384 100644
+--- a/docs/erp/cron-jobs.md
++++ b/docs/erp/cron-jobs.md
+@@ -1,6 +1,6 @@
+ # Scheduled jobs (cron)
+ 
+-Started with the server (`node-cron`). Switch off with `ENABLE_CRON=0` (for example when running several copies). Every run is stored in `cron_runs`. See and trigger them at **System → Scheduled jobs**. Times follow the server's `TZ`.
++The scheduler (`node-cron`) is **off by default**. Set `ENABLE_CRON=1` in `server/.env` to start it with the server. With it off, every job can still be run by hand from System → Scheduled jobs. Every run is stored in `cron_runs`. See and trigger them at **System → Scheduled jobs**. Times follow the server's `TZ`.
+ 
+ | Job | Schedule | What it does |
+ |---|---|---|
+diff --git a/docs/erp/parent-student.md b/docs/erp/parent-student.md
+index e19c07f..d80b390 100644
+--- a/docs/erp/parent-student.md
++++ b/docs/erp/parent-student.md
+@@ -27,7 +27,7 @@ ## Paying fees
+ 2. Choose the amount (you can pay part now) and the method.
+ 3. Approve the payment. A receipt is created at once and can be printed.
+ 
+-The built-in gateway is a demo and no money moves until the school connects a live gateway. Pressing the button twice never charges twice.
++Payment opens the secure Razorpay window (UPI, card, net banking). If the school has not connected Razorpay, a demo gateway is used and no money moves. Pressing the button twice never charges twice.
+ 
+ You get a notification (and an SMS once the school connects a provider) a few days before the due date, on the due date, and weekly while the invoice is overdue. Overdue invoices may carry a late fee.
+ 
+diff --git a/docs/erp/setup.md b/docs/erp/setup.md
+index 0b98573..13a7e6b 100644
+--- a/docs/erp/setup.md
++++ b/docs/erp/setup.md
+@@ -45,9 +45,12 @@ ## 3. Configuration (`server/.env.example`)
+ | `UPLOAD_DIR` | Question paper uploads |
+ | `BACKUP_DIR` | Nightly backups |
+ | `CORS_ORIGIN` | Comma-separated UI origins |
+-| `ENABLE_CRON` | `0` turns the scheduler off |
++| `ENABLE_CRON` | Scheduler is **off** by default. `1` turns the automatic jobs on |
++| `BREVO_API_KEY`, `EMAIL_FROM` | E-mail through Brevo |
++| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Live online fee payments |
++| `TEXTBEE_API_KEY`, `TEXTBEE_DEVICE_ID`, `SMS_DEFAULT_COUNTRY_CODE` | SMS through TextBee |
+ 
+-The server reads real environment variables, so export them or use a process manager.
++Create `server/.env` from `server/.env.example`. It is read at start-up and ignored by git. Real environment variables override it.
+ 
+ ## 4. Production (single process)
+ 
+@@ -63,8 +66,8 @@ ## 4. Production (single process)
+ 
+ ## 5. Plug in real providers
+ 
+-* **SMS / e-mail**: every message is written to the `outbox` table (Admin → System → Outbox). Add your provider in `server/src/utils/notify.js`.
+-* **Online payments**: `server/src/utils/gateway.js` ships a demo gateway that never moves money. Replace `createOrder` and `verify` with Razorpay, Stripe, bKash or similar. The idempotent confirm logic stays as it is.
++* **E-mail** goes out through Brevo, **SMS** through TextBee, once the keys are in `server/.env`. Every message is also listed under System → Outbox, where *Send queued now* retries failures. A channel without keys only logs. TextBee needs `TEXTBEE_DEVICE_ID` (the id of the phone you registered in the TextBee dashboard).
++* **Online payments** use Razorpay Checkout automatically when `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are set (signature verified on the server). Without them the demo gateway runs and no money moves. Use `rzp_test_` keys while testing.
+ 
+ ## 6. Tests
+ 
+diff --git a/server/.env.example b/server/.env.example
+index be9d4a9..7349064 100644
+--- a/server/.env.example
++++ b/server/.env.example
+@@ -1,16 +1,26 @@
+-# Copy to .env  (the server reads real environment variables; use `export` or a process manager)
++# Copy this file to server/.env and fill in your values. server/.env is git-ignored.
+ PORT=4000
+ NODE_ENV=development
+-# REQUIRED in production: long random string
+ JWT_SECRET=change-me-to-a-long-random-string
+-JWT_EXPIRES_IN=12h
+-# SQLite file (use :memory: for tests)
++JWT_EXPIRE=7d
++FRONTEND_URL=http://localhost:5173
++
+ DB_PATH=./data/school.db
+ UPLOAD_DIR=./uploads
+ BACKUP_DIR=./data/backups
+-# Origin(s) of the React app, comma separated
+-CORS_ORIGIN=http://localhost:5173
+-# Payment provider: "mock" (built-in simulator). Add real adapters in src/utils/gateway.js
+-PAYMENT_PROVIDER=mock
+-# Set to 0 to disable background jobs
+-ENABLE_CRON=1
++
++# Scheduler is OFF by default. Set to 1 to run the automatic jobs.
++ENABLE_CRON=0
++
++# E-mail through Brevo (https://app.brevo.com > SMTP & API > API keys)
++BREVO_API_KEY=
++EMAIL_FROM=you@example.com
++
++# Online fees through Razorpay (leave empty to use the demo gateway)
++RAZORPAY_KEY_ID=
++RAZORPAY_KEY_SECRET=
++
++# SMS through TextBee (https://textbee.dev). Needs the device id of your registered phone.
++TEXTBEE_API_KEY=
++TEXTBEE_DEVICE_ID=
++SMS_DEFAULT_COUNTRY_CODE=+91
+diff --git a/server/src/config.js b/server/src/config.js
+index 0070606..d0d487d 100644
+--- a/server/src/config.js
++++ b/server/src/config.js
+@@ -2,6 +2,8 @@ import path from 'node:path';
+ import { fileURLToPath } from 'node:url';
+ 
+ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
++// Load server/.env (real environment variables always win)
++try { process.loadEnvFile(path.join(root, '.env')); } catch { /* no .env file - fine */ }
+ const env = process.env;
+ const isProd = env.NODE_ENV === 'production';
+ 
+@@ -15,12 +17,17 @@ export const config = {
+   isProd,
+   port: Number(env.PORT || 4000),
+   jwtSecret: env.JWT_SECRET || 'dev-only-secret-do-not-use-in-production',
+-  jwtExpiresIn: env.JWT_EXPIRES_IN || '12h',
++  jwtExpiresIn: env.JWT_EXPIRES_IN || env.JWT_EXPIRE || '12h',
+   dbPath: env.DB_PATH ? (env.DB_PATH === ':memory:' ? ':memory:' : path.resolve(root, env.DB_PATH)) : path.join(root, 'data', 'school.db'),
+   uploadDir: path.resolve(root, env.UPLOAD_DIR || 'uploads'),
+   backupDir: path.resolve(root, env.BACKUP_DIR || 'data/backups'),
+-  corsOrigin: (env.CORS_ORIGIN || 'http://localhost:5173').split(',').map((s) => s.trim()),
+-  paymentProvider: env.PAYMENT_PROVIDER || 'mock',
+-  enableCron: env.ENABLE_CRON !== '0',
++  corsOrigin: (env.CORS_ORIGIN || env.FRONTEND_URL || 'http://localhost:5173').split(',').map((s) => s.trim()),
++  paymentProvider: env.PAYMENT_PROVIDER || (env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET ? 'razorpay' : 'mock'),
++  razorpay: { keyId: env.RAZORPAY_KEY_ID || '', keySecret: env.RAZORPAY_KEY_SECRET || '' },
++  brevoApiKey: env.BREVO_API_KEY || '',
++  emailFrom: env.EMAIL_FROM || env.EMAIL_USER || '',
++  textbee: { apiKey: env.TEXTBEE_API_KEY || '', deviceId: env.TEXTBEE_DEVICE_ID || '' },
++  smsCountryCode: env.SMS_DEFAULT_COUNTRY_CODE || '+91',
++  enableCron: env.ENABLE_CRON === '1',            // scheduler is OFF unless ENABLE_CRON=1
+   clientDist: path.resolve(root, '..', 'client', 'dist'),
+ };
+diff --git a/server/src/jobs/index.js b/server/src/jobs/index.js
+index 25b9b7c..7bf8b84 100644
+--- a/server/src/jobs/index.js
++++ b/server/src/jobs/index.js
+@@ -140,7 +140,7 @@ export function jobStatus() {
+ }
+ 
+ export function startCron() {
+-  if (!config.enableCron) { console.log('[cron] disabled (ENABLE_CRON=0)'); return []; }
++  if (!config.enableCron) { console.log('[cron] scheduler off (set ENABLE_CRON=1 to enable). Jobs can still be run manually.'); return []; }
+   const tz = process.env.TZ || undefined;
+   const tasks = Object.entries(JOBS).map(([name, j]) => cron.schedule(j.schedule, () => { runJob(name); }, { timezone: tz }));
+   // anything left "running" by a crash is closed out
+diff --git a/server/src/routes/fees.js b/server/src/routes/fees.js
+index da8a546..262546d 100644
+--- a/server/src/routes/fees.js
++++ b/server/src/routes/fees.js
+@@ -187,33 +187,37 @@ r.get('/ledger/:studentId', ah((req, res) => {
+ }));
+ 
+ // ------------------------------------------------------------- online payment portal (parents)
+-r.post('/portal/order', requireRole('parent'), ah((req, res) => {
++r.post('/portal/order', requireRole('parent'), ah(async (req, res) => {
+   const inv = get('SELECT * FROM invoices WHERE id = ?', int(req.body.invoice_id, 'invoice')); if (!inv) throw notFound('Invoice not found');
+   studentAccess(req.user, inv.student_id);
+   const bal = balanceOf(inv.id);
+   if (inv.status === 'cancelled' || bal.balance <= 0.005) throw bad('Nothing is due on this invoice');
+   const amount = req.body.amount ? num(req.body.amount, 'Amount', { min: 1 }) : bal.balance;
+   if (amount > money(bal.balance) + 0.005) throw bad('Amount exceeds the outstanding balance');
+-  const ref = newOrderRef();
++  const g = gateway();
++  const created = await g.createOrder({ orderRef: newOrderRef(), amount: money(amount), invoiceNo: inv.invoice_no });
++  const ref = created.orderRef;
+   run('INSERT INTO gateway_orders(order_ref, invoice_id, student_id, amount, created_by) VALUES (?,?,?,?,?)', ref, inv.id, inv.student_id, money(amount), req.user.id);
+-  res.status(201).json({ order_ref: ref, amount: money(amount), invoice_no: inv.invoice_no, provider: gateway().name, ...gateway().createOrder({ orderRef: ref }) });
++  res.status(201).json({ order_ref: ref, amount: money(amount), invoice_no: inv.invoice_no, ...created, provider_name: g.name });
+ }));
+ 
+-r.post('/portal/confirm', requireRole('parent'), ah((req, res) => {
++r.post('/portal/confirm', requireRole('parent'), ah(async (req, res) => {
+   const ref = str(req.body.order_ref, 'order_ref', { max: 60 });
+-  const method = oneOf(req.body.method ?? 'upi', ['upi', 'card', 'netbanking'], 'method');
++  const o0 = get('SELECT * FROM gateway_orders WHERE order_ref = ?', ref);
++  if (!o0) throw notFound('Order not found');
++  studentAccess(req.user, o0.student_id);
++  // verify with the gateway first (network call, so outside the DB transaction)
++  const v = o0.status === 'paid' ? null : await gateway().verify({ ...req.body, orderRef: ref });
++  const method = oneOf(v?.method ?? req.body.method ?? 'upi', ['upi', 'card', 'netbanking'], 'method');
+   const result = tx(() => {
+     const o = get('SELECT * FROM gateway_orders WHERE order_ref = ?', ref);
+-    if (!o) throw notFound('Order not found');
+-    studentAccess(req.user, o.student_id);
+     if (o.status === 'paid') return { duplicate: true, payment: get('SELECT * FROM payments WHERE idempotency_key = ?', `order:${ref}`) };
+-    const v = gateway().verify({ outcome: req.body.outcome });
+-    if (!v.ok) { run("UPDATE gateway_orders SET status = 'failed' WHERE id = ?", o.id); return { failed: true }; }
++    if (!v?.ok) { run("UPDATE gateway_orders SET status = 'failed' WHERE id = ?", o.id); return { failed: true }; }
+     const out = recordPayment({ invoiceId: o.invoice_id, amount: o.amount, method, reference: v.reference, idempotencyKey: `order:${ref}`, userId: req.user.id });
+     run("UPDATE gateway_orders SET status = 'paid' WHERE id = ?", o.id);
+     return out;
+   });
+-  if (result.failed) return res.status(402).json({ error: 'Payment was declined by the bank. No money was taken. You can try again.' });
++  if (result.failed) return res.status(402).json({ error: 'Payment could not be verified or was declined. No money was taken. You can try again.' });
+   if (!result.duplicate) {
+     notifyAdmins({ title: 'Online payment received', body: `${result.payment.receipt_no} - ${result.payment.amount}`, kind: 'fee', link: '/finance' });
+     audit(req, 'online_payment', 'payment', result.payment.id, { amount: result.payment.amount });
+diff --git a/server/src/routes/system.js b/server/src/routes/system.js
+index 7a9fc19..170d6cf 100644
+--- a/server/src/routes/system.js
++++ b/server/src/routes/system.js
+@@ -1,4 +1,5 @@
+ import { Router } from 'express';
++import { flushOutbox, channels } from '../utils/dispatch.js';
+ import fs from 'node:fs';
+ import path from 'node:path';
+ import { get, all, run, db, getSetting, setSetting } from '../db/index.js';
+@@ -62,6 +63,8 @@ r.post('/jobs/:name/run', requireRole('admin'), ah(async (req, res) => {
+   const out = await runJob(req.params.name, 'manual');
+   audit(req, 'run_job', 'job', req.params.name); res.json(out);
+ }));
++r.get('/channels', requireRole('admin'), ah((_req, res) => res.json(channels())));
++r.post('/outbox/flush', requireRole('admin'), ah(async (_req, res) => res.json(await flushOutbox())));
+ r.get('/outbox', requireRole('admin'), ah((_req, res) => res.json({ rows: all('SELECT * FROM outbox ORDER BY id DESC LIMIT 100') })));
+ 
+ // ---- database backups
+diff --git a/server/src/utils/dispatch.js b/server/src/utils/dispatch.js
+new file mode 100644
+index 0000000..8e9bc1e
+--- /dev/null
++++ b/server/src/utils/dispatch.js
+@@ -0,0 +1,43 @@
++import { all, run, getSetting } from '../db/index.js';
++import { config } from '../config.js';
++
++/**
++ * Delivers queued outbox rows.
++ *  - e-mail through Brevo (BREVO_API_KEY + EMAIL_FROM)
++ *  - SMS through TextBee (TEXTBEE_API_KEY + TEXTBEE_DEVICE_ID)
++ * A channel that is not configured leaves its rows as "logged" so nothing is lost and nothing crashes.
++ */
++const phone = (n) => { const d = String(n).replace(/[^\d+]/g, ''); return d.startsWith('+') ? d : d.length === 10 ? `${config.smsCountryCode}${d}` : `+${d}`; };
++
++async function sendEmail(m) {
++  const r = await fetch('https://api.brevo.com/v3/smtp/email', {
++    method: 'POST', headers: { 'api-key': config.brevoApiKey, 'content-type': 'application/json', accept: 'application/json' },
++    body: JSON.stringify({ sender: { name: getSetting('school_name', 'School'), email: config.emailFrom }, to: [{ email: m.to_addr }], subject: m.subject || 'Notification',
++      textContent: m.body, htmlContent: `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5">${String(m.body).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>')}</div>` }),
++  });
++  if (!r.ok) throw new Error(`Brevo ${r.status}: ${(await r.text()).slice(0, 120)}`);
++}
++async function sendSms(m) {
++  const { apiKey, deviceId } = config.textbee;
++  const r = await fetch(`https://api.textbee.dev/api/v1/gateway/devices/${deviceId}/send-sms`, {
++    method: 'POST', headers: { 'x-api-key': apiKey, 'content-type': 'application/json' }, body: JSON.stringify({ recipients: [phone(m.to_addr)], message: m.body }),
++  });
++  if (!r.ok) throw new Error(`TextBee ${r.status}: ${(await r.text()).slice(0, 120)}`);
++}
++
++const ready = { email: () => !!(config.brevoApiKey && config.emailFrom), sms: () => !!(config.textbee.apiKey && config.textbee.deviceId) };
++let busy = false;
++export async function flushOutbox() {
++  if (busy) return { sent: 0, failed: 0, logged: 0 };
++  busy = true; const out = { sent: 0, failed: 0, logged: 0 };
++  try {
++    for (const m of all("SELECT * FROM outbox WHERE status IN ('queued','failed') ORDER BY id LIMIT 50")) {
++      if (!ready[m.channel]()) { run("UPDATE outbox SET status = 'logged' WHERE id = ?", m.id); out.logged++; continue; }
++      try { await (m.channel === 'email' ? sendEmail(m) : sendSms(m)); run("UPDATE outbox SET status = 'sent' WHERE id = ?", m.id); out.sent++; }
++      catch (e) { console.error('[outbox]', e.message); run("UPDATE outbox SET status = 'failed' WHERE id = ?", m.id); out.failed++; }
++    }
++  } finally { busy = false; }
++  return out;
++}
++export const flushSoon = () => setImmediate(() => { flushOutbox().catch((e) => console.error('[outbox]', e.message)); });
++export const channels = () => ({ email: ready.email(), sms: ready.sms(), payments: config.paymentProvider });
+diff --git a/server/src/utils/gateway.js b/server/src/utils/gateway.js
+index a9d77a5..5281843 100644
+--- a/server/src/utils/gateway.js
++++ b/server/src/utils/gateway.js
+@@ -3,7 +3,7 @@ import { config } from '../config.js';
+ 
+ /**
+  * Payment gateway adapter. Only the built-in "mock" provider ships with the project.
+- * To go live, implement createOrder/verify for Razorpay / Stripe / PayU here and set PAYMENT_PROVIDER.
++ * Razorpay is used automatically when RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are set; otherwise the demo gateway runs.
+  */
+ const providers = {
+   mock: {
+@@ -14,6 +14,30 @@ const providers = {
+   },
+ };
+ 
++const rzpAuth = () => `Basic ${Buffer.from(`${config.razorpay.keyId}:${config.razorpay.keySecret}`).toString('base64')}`;
++const RZP_METHOD = { upi: 'upi', card: 'card', netbanking: 'netbanking' };
++providers.razorpay = {
++  name: 'Razorpay',
++  // Creates a real Razorpay order. The Razorpay order id becomes our order_ref.
++  async createOrder({ amount, invoiceNo }) {
++    const r = await fetch('https://api.razorpay.com/v1/orders', { method: 'POST', headers: { Authorization: rzpAuth(), 'Content-Type': 'application/json' },
++      body: JSON.stringify({ amount: Math.round(amount * 100), currency: 'INR', receipt: String(invoiceNo).slice(0, 40) }) });
++    const j = await r.json().catch(() => ({}));
++    if (!r.ok) throw new Error(j?.error?.description || 'Razorpay could not create the order');
++    return { provider: 'razorpay', orderRef: j.id, keyId: config.razorpay.keyId, currency: j.currency };
++  },
++  // Verifies the checkout signature (HMAC-SHA256 of order_id|payment_id) and looks up the real payment method.
++  async verify({ orderRef, razorpay_payment_id: pid, razorpay_signature: sig }) {
++    if (!pid || !sig) return { ok: false };
++    const expected = crypto.createHmac('sha256', config.razorpay.keySecret).update(`${orderRef}|${pid}`).digest('hex');
++    const a = Buffer.from(expected), b = Buffer.from(String(sig));
++    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return { ok: false };
++    let method = 'upi';
++    try { const r = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(pid)}`, { headers: { Authorization: rzpAuth() } }); const j = await r.json(); method = RZP_METHOD[j.method] || 'netbanking'; } catch { /* keep default */ }
++    return { ok: true, reference: pid, method };
++  },
++};
++
+ export function gateway() {
+   const p = providers[config.paymentProvider];
+   if (!p) throw new Error(`Unknown PAYMENT_PROVIDER "${config.paymentProvider}"`);
+diff --git a/server/src/utils/notify.js b/server/src/utils/notify.js
+index d059acb..5c09033 100644
+--- a/server/src/utils/notify.js
++++ b/server/src/utils/notify.js
+@@ -1,8 +1,9 @@
+ import { all, get, run, db } from '../db/index.js';
++import { flushSoon } from './dispatch.js';
+ 
+ const insertN = () => db.prepare('INSERT INTO notifications(user_id, title, body, kind, link) VALUES (?,?,?,?,?)');
+ 
+-/** In-app notification to one or more users. Optionally mirrors to the SMS outbox (gateway stub). */
++/** In-app notification to one or more users. With sms:true it is also queued as SMS (and e-mail when the user has one) and delivered by dispatch.js. */
+ export function notify(userIds, { title, body = null, kind = 'info', link = null, sms = false }) {
+   const ids = [...new Set((Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean))];
+   if (!ids.length) return 0;
+@@ -11,12 +12,14 @@ export function notify(userIds, { title, body = null, kind = 'info', link = null
+     for (const id of ids) {
+       ins.run(id, title, body, kind, link);
+       if (sms) {
+-        const u = get('SELECT mobile FROM users WHERE id = ?', id);
+-        if (u?.mobile) run("INSERT INTO outbox(channel, to_addr, subject, body) VALUES ('sms', ?, ?, ?)", u.mobile, title, body || title);
++        const u = get('SELECT mobile, email FROM users WHERE id = ?', id);
++        if (u?.mobile) run("INSERT INTO outbox(channel, to_addr, subject, body) VALUES ('sms', ?, ?, ?)", u.mobile, title, body ? `${title}: ${body}` : title);
++        if (u?.email) run("INSERT INTO outbox(channel, to_addr, subject, body) VALUES ('email', ?, ?, ?)", u.email, title, body || title);
+       }
+     }
+   });
+   doAll();
++  if (sms) flushSoon();
+   return ids.length;
+ }
+ 
+-- 
+2.43.0
+
