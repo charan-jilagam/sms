@@ -19,6 +19,19 @@ Every deployment serves exactly one school — no multi-tenant SaaS layer, no se
 
 ---
 
+## 🆕 Node + React + SQLite edition (`server/` and `client/`)
+
+An additive, self-contained ERP stack lives next to the Laravel app: **Express + SQLite API** (`server/`) and a **React + Vite UI** (`client/`). It adds role-based portals for admin, class teachers, parents/students, drivers and finance, fee collection with a payment portal, cash book and bank-deposit verification, HRMS and payroll, live bus tracking, support tickets, timetable automation, ID card templates, an audit trail and seven cron jobs. The Laravel code is untouched.
+
+```bash
+cd server && npm install && npm run seed && npm start      # API  :4000
+cd client && npm install && npm run dev                    # UI   :5173
+```
+
+Manuals for every role are in [`docs/erp/`](docs/erp/README.md).
+
+---
+
 ## 💡 About This Project
 
 This is a **hobby / R&D project**, built almost entirely with [Claude](https://claude.com) (Anthropic's AI) — an
