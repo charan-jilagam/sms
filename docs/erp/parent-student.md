@@ -27,7 +27,7 @@
 2. Choose the amount (you can pay part now) and the method.
 3. Approve the payment. A receipt is created at once and can be printed.
 
-The built-in gateway is a demo and no money moves until the school connects a live gateway. Pressing the button twice never charges twice.
+Payment opens the secure Razorpay window (UPI, card, net banking). If the school has not connected Razorpay, a demo gateway is used and no money moves. Pressing the button twice never charges twice.
 
 You get a notification (and an SMS once the school connects a provider) a few days before the due date, on the due date, and weekly while the invoice is overdue. Overdue invoices may carry a late fee.
 

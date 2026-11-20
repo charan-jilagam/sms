@@ -1,8 +1,9 @@
 import { all, get, run, db } from '../db/index.js';
+import { flushSoon } from './dispatch.js';
 
 const insertN = () => db.prepare('INSERT INTO notifications(user_id, title, body, kind, link) VALUES (?,?,?,?,?)');
 
-/** In-app notification to one or more users. Optionally mirrors to the SMS outbox (gateway stub). */
+/** In-app notification to one or more users. With sms:true it is also queued as SMS (and e-mail when the user has one) and delivered by dispatch.js. */
 export function notify(userIds, { title, body = null, kind = 'info', link = null, sms = false }) {
   const ids = [...new Set((Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean))];
   if (!ids.length) return 0;
@@ -11,12 +12,14 @@ export function notify(userIds, { title, body = null, kind = 'info', link = null
     for (const id of ids) {
       ins.run(id, title, body, kind, link);
       if (sms) {
-        const u = get('SELECT mobile FROM users WHERE id = ?', id);
-        if (u?.mobile) run("INSERT INTO outbox(channel, to_addr, subject, body) VALUES ('sms', ?, ?, ?)", u.mobile, title, body || title);
+        const u = get('SELECT mobile, email FROM users WHERE id = ?', id);
+        if (u?.mobile) run("INSERT INTO outbox(channel, to_addr, subject, body) VALUES ('sms', ?, ?, ?)", u.mobile, title, body ? `${title}: ${body}` : title);
+        if (u?.email) run("INSERT INTO outbox(channel, to_addr, subject, body) VALUES ('email', ?, ?, ?)", u.email, title, body || title);
       }
     }
   });
   doAll();
+  if (sms) flushSoon();
   return ids.length;
 }
 

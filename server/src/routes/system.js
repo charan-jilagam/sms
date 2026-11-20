@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { flushOutbox, channels } from '../utils/dispatch.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { get, all, run, db, getSetting, setSetting } from '../db/index.js';
@@ -62,6 +63,8 @@ r.post('/jobs/:name/run', requireRole('admin'), ah(async (req, res) => {
   const out = await runJob(req.params.name, 'manual');
   audit(req, 'run_job', 'job', req.params.name); res.json(out);
 }));
+r.get('/channels', requireRole('admin'), ah((_req, res) => res.json(channels())));
+r.post('/outbox/flush', requireRole('admin'), ah(async (_req, res) => res.json(await flushOutbox())));
 r.get('/outbox', requireRole('admin'), ah((_req, res) => res.json({ rows: all('SELECT * FROM outbox ORDER BY id DESC LIMIT 100') })));
 
 // ---- database backups

@@ -27,8 +27,21 @@ export function Receipt({ id, onClose }) {
 /* ---------------- parent online payment ---------------- */
 function PayModal({ inv, onClose, onDone }) {
   const [amount, setAmount] = useState(inv.balance); const [method, setMethod] = useState('upi'); const [step, setStep] = useState('choose'); const [err, setErr] = useState(''); const [order, setOrder] = useState(null);
-  const start = async () => { setErr(''); try { const o = await api.post('/fees/portal/order', { invoice_id: inv.invoice_id, amount: Number(amount) }); setOrder(o); setStep('pay'); } catch (e) { setErr(e.message); } };
-  const confirm = async (outcome) => { setStep('processing'); setErr(''); try { const r = await api.post('/fees/portal/confirm', { order_ref: order.order_ref, method, outcome }); setStep('done'); setOrder({ ...order, payment: r.payment }); } catch (e) { setErr(e.message); setStep('pay'); } };
+  const { user } = useAuth();
+  const loadRzp = () => new Promise((ok, no) => { if (window.Razorpay) return ok(); const s = document.createElement('script'); s.src = 'https://checkout.razorpay.com/v1/checkout.js'; s.onload = ok; s.onerror = () => no(new Error('Could not load Razorpay. Check your internet connection.')); document.body.appendChild(s); });
+  const confirm = async (outcome, extra = {}, o = order) => { setStep('processing'); setErr(''); try { const r = await api.post('/fees/portal/confirm', { order_ref: o.order_ref, method, outcome, ...extra }); setStep('done'); setOrder({ ...o, payment: r.payment }); } catch (e) { setErr(e.message); setStep(o.provider === 'razorpay' ? 'choose' : 'pay'); } };
+  const start = async () => {
+    setErr('');
+    try {
+      const o = await api.post('/fees/portal/order', { invoice_id: inv.invoice_id, amount: Number(amount) }); setOrder(o);
+      if (o.provider !== 'razorpay') return setStep('pay');
+      await loadRzp();
+      new window.Razorpay({ key: o.keyId, order_id: o.order_ref, amount: Math.round(o.amount * 100), currency: o.currency || 'INR', name: 'School fees', description: `${inv.description} (${inv.invoice_no})`,
+        prefill: { name: user.name, email: user.email || undefined, contact: user.mobile || undefined }, theme: { color: '#4f46e5' },
+        handler: (r) => confirm('success', { razorpay_payment_id: r.razorpay_payment_id, razorpay_signature: r.razorpay_signature }, o),
+        modal: { ondismiss: () => setErr('Payment window closed. No money was taken.') } }).open();
+    } catch (e) { setErr(e.message); }
+  };
   const M = [['upi', Smartphone, 'UPI'], ['card', CreditCard, 'Card'], ['netbanking', Landmark, 'Net banking']];
   return (
     <Modal title={step === 'done' ? 'Payment successful' : `Pay ${inv.description}`} size="narrow" onClose={step === 'processing' ? undefined : (step === 'done' ? onDone : onClose)}
@@ -36,7 +49,7 @@ function PayModal({ inv, onClose, onDone }) {
       {err && <Alert tone="bad">{err}</Alert>}
       {step === 'choose' && <div className="stack"><div className="card card-pad"><div className="row between"><span className="muted">{inv.invoice_no}</span><b>Balance {money(inv.balance)}</b></div></div>
         <Input label="Amount to pay" type="number" min="1" max={inv.balance} value={amount} onChange={setAmount} hint="You can pay part of the balance now and the rest later." />
-        <div className="field"><label>Payment method</label><div className="row">{M.map(([k, I, l]) => <button key={k} type="button" className={`chip ${method === k ? 'on' : ''}`} onClick={() => setMethod(k)}><I size={15} /> {l}</button>)}</div></div></div>}
+        <div className="field" hidden={false}><label>Payment method (UPI, card and net banking are all offered on the secure Razorpay page)</label><div className="row">{M.map(([k, I, l]) => <button key={k} type="button" className={`chip ${method === k ? 'on' : ''}`} onClick={() => setMethod(k)}><I size={15} /> {l}</button>)}</div></div></div>}
       {step === 'pay' && order && <div className="stack"><Alert><ShieldCheck />This is the built-in <b>demo gateway</b>. No real money moves. Connect Razorpay/Stripe in <code>server/src/utils/gateway.js</code> for live payments.</Alert>
         <div className="card card-pad center"><div className="muted small">Order {order.order_ref}</div><div style={{ fontSize: 32, fontWeight: 800 }}>{money(order.amount)}</div></div>
         <Button variant="ok" onClick={() => confirm('success')}>Approve payment</Button><Button variant="danger" onClick={() => confirm('fail')}>Simulate declined payment</Button></div>}

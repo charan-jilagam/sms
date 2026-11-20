@@ -187,33 +187,37 @@ r.get('/ledger/:studentId', ah((req, res) => {
 }));
 
 // ------------------------------------------------------------- online payment portal (parents)
-r.post('/portal/order', requireRole('parent'), ah((req, res) => {
+r.post('/portal/order', requireRole('parent'), ah(async (req, res) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', int(req.body.invoice_id, 'invoice')); if (!inv) throw notFound('Invoice not found');
   studentAccess(req.user, inv.student_id);
   const bal = balanceOf(inv.id);
   if (inv.status === 'cancelled' || bal.balance <= 0.005) throw bad('Nothing is due on this invoice');
   const amount = req.body.amount ? num(req.body.amount, 'Amount', { min: 1 }) : bal.balance;
   if (amount > money(bal.balance) + 0.005) throw bad('Amount exceeds the outstanding balance');
-  const ref = newOrderRef();
+  const g = gateway();
+  const created = await g.createOrder({ orderRef: newOrderRef(), amount: money(amount), invoiceNo: inv.invoice_no });
+  const ref = created.orderRef;
   run('INSERT INTO gateway_orders(order_ref, invoice_id, student_id, amount, created_by) VALUES (?,?,?,?,?)', ref, inv.id, inv.student_id, money(amount), req.user.id);
-  res.status(201).json({ order_ref: ref, amount: money(amount), invoice_no: inv.invoice_no, provider: gateway().name, ...gateway().createOrder({ orderRef: ref }) });
+  res.status(201).json({ order_ref: ref, amount: money(amount), invoice_no: inv.invoice_no, ...created, provider_name: g.name });
 }));
 
-r.post('/portal/confirm', requireRole('parent'), ah((req, res) => {
+r.post('/portal/confirm', requireRole('parent'), ah(async (req, res) => {
   const ref = str(req.body.order_ref, 'order_ref', { max: 60 });
-  const method = oneOf(req.body.method ?? 'upi', ['upi', 'card', 'netbanking'], 'method');
+  const o0 = get('SELECT * FROM gateway_orders WHERE order_ref = ?', ref);
+  if (!o0) throw notFound('Order not found');
+  studentAccess(req.user, o0.student_id);
+  // verify with the gateway first (network call, so outside the DB transaction)
+  const v = o0.status === 'paid' ? null : await gateway().verify({ ...req.body, orderRef: ref });
+  const method = oneOf(v?.method ?? req.body.method ?? 'upi', ['upi', 'card', 'netbanking'], 'method');
   const result = tx(() => {
     const o = get('SELECT * FROM gateway_orders WHERE order_ref = ?', ref);
-    if (!o) throw notFound('Order not found');
-    studentAccess(req.user, o.student_id);
     if (o.status === 'paid') return { duplicate: true, payment: get('SELECT * FROM payments WHERE idempotency_key = ?', `order:${ref}`) };
-    const v = gateway().verify({ outcome: req.body.outcome });
-    if (!v.ok) { run("UPDATE gateway_orders SET status = 'failed' WHERE id = ?", o.id); return { failed: true }; }
+    if (!v?.ok) { run("UPDATE gateway_orders SET status = 'failed' WHERE id = ?", o.id); return { failed: true }; }
     const out = recordPayment({ invoiceId: o.invoice_id, amount: o.amount, method, reference: v.reference, idempotencyKey: `order:${ref}`, userId: req.user.id });
     run("UPDATE gateway_orders SET status = 'paid' WHERE id = ?", o.id);
     return out;
   });
-  if (result.failed) return res.status(402).json({ error: 'Payment was declined by the bank. No money was taken. You can try again.' });
+  if (result.failed) return res.status(402).json({ error: 'Payment could not be verified or was declined. No money was taken. You can try again.' });
   if (!result.duplicate) {
     notifyAdmins({ title: 'Online payment received', body: `${result.payment.receipt_no} - ${result.payment.amount}`, kind: 'fee', link: '/finance' });
     audit(req, 'online_payment', 'payment', result.payment.id, { amount: result.payment.amount });

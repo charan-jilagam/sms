@@ -1,6 +1,6 @@
 # Scheduled jobs (cron)
 
-Started with the server (`node-cron`). Switch off with `ENABLE_CRON=0` (for example when running several copies). Every run is stored in `cron_runs`. See and trigger them at **System → Scheduled jobs**. Times follow the server's `TZ`.
+The scheduler (`node-cron`) is **off by default**. Set `ENABLE_CRON=1` in `server/.env` to start it with the server. With it off, every job can still be run by hand from System → Scheduled jobs. Every run is stored in `cron_runs`. See and trigger them at **System → Scheduled jobs**. Times follow the server's `TZ`.
 
 | Job | Schedule | What it does |
 |---|---|---|

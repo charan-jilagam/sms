@@ -140,7 +140,7 @@ export function jobStatus() {
 }
 
 export function startCron() {
-  if (!config.enableCron) { console.log('[cron] disabled (ENABLE_CRON=0)'); return []; }
+  if (!config.enableCron) { console.log('[cron] scheduler off (set ENABLE_CRON=1 to enable). Jobs can still be run manually.'); return []; }
   const tz = process.env.TZ || undefined;
   const tasks = Object.entries(JOBS).map(([name, j]) => cron.schedule(j.schedule, () => { runJob(name); }, { timezone: tz }));
   // anything left "running" by a crash is closed out

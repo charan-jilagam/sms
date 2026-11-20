@@ -27,7 +27,7 @@ function Templates() {
 function Jobs() {
   const toast = useToast(); const { data, loading, reload } = useFetch('/system/jobs'); const [busy, setBusy] = useState('');
   const run = async (n) => { setBusy(n); try { const r = await api.post(`/system/jobs/${n}/run`); toast(r.message || 'Job finished'); reload(); } catch (e) { toast(e.message, 'bad'); } setBusy(''); };
-  return <div className="stack">{data && !data.cron_enabled && <Alert tone="warn">The scheduler is switched off (<code>ENABLE_CRON=0</code>). Jobs can still be run manually here.</Alert>}
+  return <div className="stack">{data && !data.cron_enabled && <Alert>The automatic scheduler is off. Every job can still be run manually here. To run them on a timer, set <code>ENABLE_CRON=1</code> in <code>server/.env</code> and restart.</Alert>}
     {loading ? <Loading /> : <div className="grid g2">{data?.rows.map((j) => <Card key={j.name}><div className="row between"><div><b style={{ fontSize: 16 }}>{j.title}</b><div className="muted small mono">{j.name} · cron {j.schedule}</div></div>{j.last_run ? <StatusBadge status={j.last_run.status === 'ok' ? 'success' : j.last_run.status} label={cap(j.last_run.status)} /> : <Badge>Never run</Badge>}</div>
       <p className="muted" style={{ margin: '10px 0' }}>{j.description}</p>{j.last_run && <div className="small"><Clock size={12} /> {ago(j.last_run.finished_at || j.last_run.started_at)} · {j.last_run.message}</div>}
       {j.runs.length > 1 && <div className="row" style={{ gap: 4, marginTop: 10 }}>{j.runs.map((r, i) => <span key={i} title={`${fdatetime(r.started_at)}: ${r.message || r.status}`} className={`dot-step ${r.status === 'ok' ? 'on' : 'bad'}`} />)}</div>}
@@ -61,8 +61,9 @@ function Backups() {
     <Table loading={loading} rows={(data?.rows || []).map((b) => ({ ...b, id: b.name }))} empty="No backups yet" columns={[{ title: 'File', render: (b) => <span className="mono">{b.name}</span> }, { title: 'Size', render: (b) => kb(b.size) }, { title: '', render: (b) => <Button size="sm" icon={Download} onClick={() => api.download(`/system/backups/${b.name}`, b.name).catch((e) => toast(e.message, 'bad'))}>Download</Button> }]} /></Card>;
 }
 function Outbox() {
-  const { data, loading } = useFetch('/system/outbox');
-  return <Card title="Message outbox (SMS & e-mail)" pad={false}><Alert>No real gateway is connected, so every SMS or e-mail is logged here. Plug a provider into <code>server/src/utils/notify.js</code> to send them for real.</Alert>
+  const toast = useToast(); const { data, loading, reload } = useFetch('/system/outbox'); const ch = useFetch('/system/channels'); const [busy, setBusy] = useState(false);
+  return <Card title="Message outbox (SMS & e-mail)" action={<Button loading={busy} onClick={async () => { setBusy(true); try { const r = await api.post('/system/outbox/flush'); toast(`Sent ${r.sent}, failed ${r.failed}, not configured ${r.logged}`); reload(); } catch (e) { toast(e.message, 'bad'); } setBusy(false); }}>Send queued now</Button>} pad={false}>
+    <Alert tone={ch.data?.email && ch.data?.sms ? 'ok' : 'warn'}>E-mail (Brevo): <b>{ch.data?.email ? 'connected' : 'not configured'}</b> · SMS (TextBee): <b>{ch.data?.sms ? 'connected' : 'not configured (needs TEXTBEE_API_KEY and TEXTBEE_DEVICE_ID)'}</b> · Payments: <b>{ch.data?.payments}</b>. Channels that are not configured only log the message here.</Alert>
     <Table loading={loading} rows={data?.rows} empty="No messages yet" columns={[{ title: '', render: (m) => m.channel === 'sms' ? <MessageSquare size={16} /> : <Mail size={16} /> }, { title: 'To', key: 'to_addr' }, { title: 'Message', render: (m) => <div>{m.subject && <b>{m.subject}</b>}<div className="muted small">{m.body}</div></div> }, { title: 'When', render: (m) => ago(m.created_at) }, { title: 'Status', render: (m) => <StatusBadge status={m.status} /> }]} /></Card>;
 }
 

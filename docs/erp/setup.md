@@ -45,9 +45,12 @@ Change these before real use (Admin → Accounts → reset password).
 | `UPLOAD_DIR` | Question paper uploads |
 | `BACKUP_DIR` | Nightly backups |
 | `CORS_ORIGIN` | Comma-separated UI origins |
-| `ENABLE_CRON` | `0` turns the scheduler off |
+| `ENABLE_CRON` | Scheduler is **off** by default. `1` turns the automatic jobs on |
+| `BREVO_API_KEY`, `EMAIL_FROM` | E-mail through Brevo |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Live online fee payments |
+| `TEXTBEE_API_KEY`, `TEXTBEE_DEVICE_ID`, `SMS_DEFAULT_COUNTRY_CODE` | SMS through TextBee |
 
-The server reads real environment variables, so export them or use a process manager.
+Create `server/.env` from `server/.env.example`. It is read at start-up and ignored by git. Real environment variables override it.
 
 ## 4. Production (single process)
 
@@ -63,8 +66,8 @@ Back up `server/data/` (the `.db` file plus `backups/`) and `server/uploads/`.
 
 ## 5. Plug in real providers
 
-* **SMS / e-mail**: every message is written to the `outbox` table (Admin → System → Outbox). Add your provider in `server/src/utils/notify.js`.
-* **Online payments**: `server/src/utils/gateway.js` ships a demo gateway that never moves money. Replace `createOrder` and `verify` with Razorpay, Stripe, bKash or similar. The idempotent confirm logic stays as it is.
+* **E-mail** goes out through Brevo, **SMS** through TextBee, once the keys are in `server/.env`. Every message is also listed under System → Outbox, where *Send queued now* retries failures. A channel without keys only logs. TextBee needs `TEXTBEE_DEVICE_ID` (the id of the phone you registered in the TextBee dashboard).
+* **Online payments** use Razorpay Checkout automatically when `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are set (signature verified on the server). Without them the demo gateway runs and no money moves. Use `rzp_test_` keys while testing.
 
 ## 6. Tests
 
